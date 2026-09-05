@@ -1,0 +1,575 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Entorno para AWS DevOps Agent - Microservicios con escenarios de error intencionales'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: 'prod'
+    Description: Nombre del entorno, usado para etiquetar los recursos
+  DevOpsAgentWebhookUrl:
+    Type: String
+    Default: ''
+    Description: 'URL del endpoint webhook de DevOps Agent (dejar vacío para omitir la integración por webhook)'
+  DevOpsAgentWebhookSecret:
+    Type: String
+    Default: ''
+    NoEcho: true
+    Description: 'Clave secreta HMAC del webhook de DevOps Agent (dejar vacío para omitir la integración por webhook)'
+
+Conditions:
+  HasWebhookConfig: !And
+    - !Not [!Equals [!Ref DevOpsAgentWebhookUrl, '']]
+    - !Not [!Equals [!Ref DevOpsAgentWebhookSecret, '']]
+
+Resources:
+  # Tabla de DynamoDB
+  RentalsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${Environment}-unicorn-rentals'
+      BillingMode: PROVISIONED
+      ProvisionedThroughput:
+        ReadCapacityUnits: 2  # A propósito bajo, para provocar throttling
+        WriteCapacityUnits: 2
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: DevOpsAgent
+        - Key: Application
+          Value: unicorn_rentals
+        - Key: auto-delete
+          Value: never
+        - Key: auto-stop
+          Value: 'no'
+
+  # Rol de ejecución del Lambda
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${Environment}-unicorn-rentals-lambda-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                Resource: !GetAtt RentalsTable.Arn
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: DevOpsAgent
+        - Key: Application
+          Value: unicorn_rentals
+        - Key: auto-delete
+          Value: never
+        - Key: auto-stop
+          Value: 'no'
+
+  # Función Lambda que procesa los alquileres
+  RentalProcessorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${Environment}-unicorn-rental-processor'
+      Runtime: python3.13
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 30  # Timeout alto a propósito
+      MemorySize: 128  # Poca memoria, para que aparezcan los problemas
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref RentalsTable
+          ENVIRONMENT: !Ref Environment
+          ERROR_RATE: '0.3'  # 30% de tasa de error
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          import random
+          import time
+          from datetime import datetime
+          
+          dynamodb = boto3.resource('dynamodb')
+          table = dynamodb.Table(os.environ['TABLE_NAME'])
+          error_rate = float(os.environ.get('ERROR_RATE', '0.1'))
+          
+          # OJO: los mensajes de log de esta funcion van a proposito en INGLES.
+          # Son la senal de diagnostico que DevOps Agent lee para el analisis de
+          # causa raiz, y los errores que genera AWS (Runtime.OutOfMemory,
+          # ProvisionedThroughputExceeded, Task timed out) tambien vienen en ingles.
+          # Los comentarios estan en espanol; los strings de runtime, no.
+          def lambda_handler(event, context):
+              print(f"Processing rental request at {datetime.now()}")
+
+              # Parsear el evento de API Gateway
+              try:
+                  if 'body' in event and event['body']:
+                      if isinstance(event['body'], str):
+                          body = json.loads(event['body'])
+                      else:
+                          body = event['body']
+                  else:
+                      body = event
+              except json.JSONDecodeError:
+                  body = event
+
+              # Escenarios de error realistas, sin que se note que es una simulacion
+              if random.random() < error_rate:
+                  error_type = random.choice(['timeout', 'throttle', 'memory'])
+
+                  if error_type == 'timeout':
+                      print("Database connection timeout - retrying...")
+                      time.sleep(35)  # Supera el timeout del Lambda
+
+                  elif error_type == 'throttle':
+                      print("High traffic detected - processing batch operations...")
+                      # Escrituras rapidas para provocar throttling
+                      for i in range(100):
+                          try:
+                              table.put_item(Item={'id': f'rental-batch-{i}', 'status': 'processing'})
+                          except Exception as e:
+                              print(f"Database capacity exceeded: {str(e)}")
+                              raise e
+
+                  elif error_type == 'memory':
+                      print("Loading rental history and analytics data...")
+                      # Objeto grande para consumir memoria
+                      rental_analytics = 'x' * (100 * 1024 * 1024)  # Dataset grande de analitica
+
+              # Procesamiento normal
+              try:
+                  rental_id = body.get('id', f'rental-{int(time.time())}')
+
+                  # Demora de procesamiento realista
+                  time.sleep(random.uniform(0.1, 0.5))
+
+                  response = table.put_item(
+                      Item={
+                          'id': rental_id,
+                          'timestamp': datetime.now().isoformat(),
+                          'unicorn_type': body.get('unicorn_type', 'rainbow'),
+                          'customer_data': body.get('data', 'customer info'),
+                          'status': 'confirmed',
+                          'processed_by': context.function_name
+                      }
+                  )
+
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps({
+                          'message': 'Rental confirmed',
+                          'rental_id': rental_id,
+                          'timestamp': datetime.now().isoformat(),
+                          'status': 'success'
+                      })
+                  }
+
+              except Exception as e:
+                  print(f"Failed to process rental: {str(e)}")
+                  return {
+                      'statusCode': 500,
+                      'body': json.dumps({
+                          'error': 'Rental processing failed',
+                          'details': str(e),
+                          'timestamp': datetime.now().isoformat()
+                      })
+                  }
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: DevOpsAgent
+        - Key: Application
+          Value: unicorn_rentals
+        - Key: auto-delete
+          Value: never
+        - Key: auto-stop
+          Value: 'no'
+
+  # API Gateway de cara al cliente
+  RentalsApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub '${Environment}-unicorn-rentals-api'
+      Description: 'API de Unicorn Rentals'
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: DevOpsAgent
+        - Key: Application
+          Value: unicorn_rentals
+        - Key: auto-delete
+          Value: never
+        - Key: auto-stop
+          Value: 'no'
+
+  # Recurso del API Gateway
+  ApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref RentalsApiGateway
+      ParentId: !GetAtt RentalsApiGateway.RootResourceId
+      PathPart: 'process'
+
+  # Método del API Gateway
+  ApiMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RentalsApiGateway
+      ResourceId: !Ref ApiResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${RentalProcessorFunction.Arn}/invocations'
+      MethodResponses:
+        - StatusCode: 200
+        - StatusCode: 500
+
+  # Permiso para que API Gateway invoque el Lambda
+  LambdaApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref RentalProcessorFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${RentalsApiGateway}/*/*'
+
+  # Despliegue del API Gateway
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - ApiMethod
+    Properties:
+      RestApiId: !Ref RentalsApiGateway
+      StageName: !Ref Environment
+
+  # Alarmas de CloudWatch
+  LambdaErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-unicorn-rentals-errors'
+      AlarmDescription: 'Tasa de errores del procesador de alquileres de unicornios'
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 3
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions: !If
+        - HasWebhookConfig
+        - - !Ref AlarmNotificationTopic
+        - !Ref 'AWS::NoValue'
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref RentalProcessorFunction
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: DevOpsAgent
+        - Key: Application
+          Value: unicorn_rentals
+        - Key: auto-delete
+          Value: never
+        - Key: auto-stop
+          Value: 'no'
+
+  LambdaDurationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-unicorn-rentals-duration'
+      AlarmDescription: 'Duración alta en el procesador de alquileres de unicornios'
+      MetricName: Duration
+      Namespace: AWS/Lambda
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 10000  # 10 segundos
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions: !If
+        - HasWebhookConfig
+        - - !Ref AlarmNotificationTopic
+        - !Ref 'AWS::NoValue'
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref RentalProcessorFunction
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: DevOpsAgent
+        - Key: Application
+          Value: unicorn_rentals
+        - Key: auto-delete
+          Value: never
+        - Key: auto-stop
+          Value: 'no'
+
+  DynamoDBThrottleAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-unicorn-rentals-throttles'
+      AlarmDescription: 'Eventos de throttling en la base de datos de unicorn rentals'
+      MetricName: WriteThrottleEvents
+      Namespace: AWS/DynamoDB
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      AlarmActions: !If
+        - HasWebhookConfig
+        - - !Ref AlarmNotificationTopic
+        - !Ref 'AWS::NoValue'
+      Dimensions:
+        - Name: TableName
+          Value: !Ref RentalsTable
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: DevOpsAgent
+        - Key: Application
+          Value: unicorn_rentals
+        - Key: auto-delete
+          Value: never
+        - Key: auto-stop
+          Value: 'no'
+
+  # Tópico SNS del pipeline Alarma de CloudWatch → Webhook de DevOps Agent
+  AlarmNotificationTopic:
+    Type: AWS::SNS::Topic
+    Condition: HasWebhookConfig
+    Properties:
+      TopicName: !Sub '${Environment}-unicorn-rentals-alarm-notifications'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: DevOpsAgent
+        - Key: Application
+          Value: unicorn_rentals
+        - Key: auto-delete
+          Value: never
+        - Key: auto-stop
+          Value: 'no'
+
+  # Rol del Lambda reenviador del webhook
+  WebhookForwarderRole:
+    Type: AWS::IAM::Role
+    Condition: HasWebhookConfig
+    Properties:
+      RoleName: !Sub '${Environment}-webhook-forwarder-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: DevOpsAgent
+        - Key: Application
+          Value: unicorn_rentals
+        - Key: auto-delete
+          Value: never
+        - Key: auto-stop
+          Value: 'no'
+
+  # Lambda que reenvía las alarmas al webhook de DevOps Agent
+  WebhookForwarderFunction:
+    Type: AWS::Lambda::Function
+    Condition: HasWebhookConfig
+    Properties:
+      FunctionName: !Sub '${Environment}-devops-agent-webhook-forwarder'
+      Runtime: python3.13
+      Handler: index.lambda_handler
+      Role: !GetAtt WebhookForwarderRole.Arn
+      Timeout: 30
+      MemorySize: 128
+      Environment:
+        Variables:
+          WEBHOOK_URL: !Ref DevOpsAgentWebhookUrl
+          WEBHOOK_SECRET: !Ref DevOpsAgentWebhookSecret
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import hashlib
+          import hmac
+          import base64
+          from datetime import datetime
+          from urllib import request, error
+
+          def lambda_handler(event, context):
+              webhook_url = os.environ['WEBHOOK_URL']
+              webhook_secret = os.environ['WEBHOOK_SECRET']
+
+              for record in event.get('Records', []):
+                  message = record.get('Sns', {}).get('Message', '{}')
+                  try:
+                      alarm = json.loads(message)
+                  except json.JSONDecodeError:
+                      print(f"No se pudo parsear el mensaje de SNS: {message}")
+                      continue
+
+                  alarm_name = alarm.get('AlarmName', 'Alarma desconocida')
+                  alarm_desc = alarm.get('AlarmDescription', '')
+                  new_state = alarm.get('NewStateValue', '')
+                  reason = alarm.get('NewStateReason', '')
+                  region = alarm.get('Region', '')
+                  account = alarm.get('AWSAccountId', '')
+                  namespace = alarm.get('Trigger', {}).get('Namespace', '')
+                  metric = alarm.get('Trigger', {}).get('MetricName', '')
+
+                  # Solo disparar investigaciones cuando el estado es ALARM
+                  if new_state != 'ALARM':
+                      print(f"Omitiendo {alarm_name}: el estado es {new_state}")
+                      continue
+
+                  timestamp = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.000Z')
+                  incident_id = f"cw-alarm-{alarm_name}-{int(datetime.utcnow().timestamp())}"
+
+                  payload = json.dumps({
+                      "eventType": "incident",
+                      "incidentId": incident_id,
+                      "action": "created",
+                      "priority": "HIGH",
+                      "title": f"Alarma de CloudWatch: {alarm_name}",
+                      "description": (
+                          f"{alarm_desc}. {reason}. "
+                          f"Metric: {namespace}/{metric} in {region} (Account: {account})"
+                      ),
+                      "service": "unicorn_rentals",
+                      "timestamp": timestamp,
+                      "data": {
+                          "metadata": {
+                              "region": region,
+                              "environment": os.environ.get('ENVIRONMENT', 'prod'),
+                              "source": "cloudwatch-alarm",
+                              "alarm_name": alarm_name
+                          }
+                      }
+                  })
+
+                  # Firma HMAC
+                  sig_input = f"{timestamp}:{payload}"
+                  signature = base64.b64encode(
+                      hmac.new(
+                          webhook_secret.encode('utf-8'),
+                          sig_input.encode('utf-8'),
+                          hashlib.sha256
+                      ).digest()
+                  ).decode('utf-8')
+
+                  req = request.Request(
+                      webhook_url,
+                      data=payload.encode('utf-8'),
+                      headers={
+                          'Content-Type': 'application/json',
+                          'x-amzn-event-timestamp': timestamp,
+                          'x-amzn-event-signature': signature
+                      },
+                      method='POST'
+                  )
+
+                  try:
+                      with request.urlopen(req) as resp:
+                          print(f"Webhook enviado para {alarm_name}: {resp.status}")
+                  except error.HTTPError as e:
+                      print(f"Fallo el webhook para {alarm_name}: {e.code} {e.read().decode()}")
+                  except Exception as e:
+                      print(f"Error de webhook para {alarm_name}: {str(e)}")
+
+              return {'statusCode': 200}
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: DevOpsAgent
+        - Key: Application
+          Value: unicorn_rentals
+        - Key: auto-delete
+          Value: never
+        - Key: auto-stop
+          Value: 'no'
+
+  # Permiso de SNS para invocar el Lambda
+  WebhookForwarderSnsPermission:
+    Type: AWS::Lambda::Permission
+    Condition: HasWebhookConfig
+    Properties:
+      FunctionName: !Ref WebhookForwarderFunction
+      Action: lambda:InvokeFunction
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref AlarmNotificationTopic
+
+  # Suscripción de SNS al Lambda
+  WebhookForwarderSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasWebhookConfig
+    Properties:
+      TopicArn: !Ref AlarmNotificationTopic
+      Protocol: lambda
+      Endpoint: !GetAtt WebhookForwarderFunction.Arn
+
+Outputs:
+  ApiGatewayUrl:
+    Description: 'URL del endpoint del API Gateway'
+    Value: !Sub 'https://${RentalsApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/process'
+    Export:
+      Name: !Sub '${Environment}-api-url'
+
+  LambdaFunctionName:
+    Description: 'Nombre de la función Lambda'
+    Value: !Ref RentalProcessorFunction
+    Export:
+      Name: !Sub '${Environment}-lambda-name'
+
+  DynamoDBTableName:
+    Description: 'Nombre de la tabla de DynamoDB'
+    Value: !Ref RentalsTable
+    Export:
+      Name: !Sub '${Environment}-table-name'
+
+  CloudWatchLogGroup:
+    Description: 'Log group de CloudWatch del Lambda'
+    Value: !Sub '/aws/lambda/${RentalProcessorFunction}'
+    Export:
+      Name: !Sub '${Environment}-log-group'
