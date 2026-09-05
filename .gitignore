@@ -26,3 +26,6 @@ mcp-server-hosting/lambda/package/
 mcp-server-hosting/lambda-package.zip
 mcp-server-hosting/.venv/
 mcp-server-hosting/cdk.out/
+
+.terraform
+.terraform.*
