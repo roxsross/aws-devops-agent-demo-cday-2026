@@ -26,6 +26,3 @@ mcp-server-hosting/lambda/package/
 mcp-server-hosting/lambda-package.zip
 mcp-server-hosting/.venv/
 mcp-server-hosting/cdk.out/
-# Paquete de la skill: se genera desde devops-agent-skill/, no se versiona
-# Regenerar con: cd devops-agent-skill && zip -r ../devops-agent-skill-billing-mcp.zip . -x '.*'
-devops-agent-skill-billing-mcp.zip

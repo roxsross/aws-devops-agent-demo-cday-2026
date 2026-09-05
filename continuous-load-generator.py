@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """
-Generador de carga continua para la demo de AWS DevOps Agent.
-
-Charla: "La última guardia manual" por Roxs.
+Generador de carga continua para la demo de AWS DevOps Agent
 
 Este script genera carga continua de fondo para mantener patrones de error
-realistas y que DevOps Agent tenga algo concreto que analizar.
+realistas que DevOps Agent pueda analizar.
 """
 
 import requests
@@ -39,21 +37,15 @@ class ContinuousLoadGenerator:
 
         # Tipos de unicornio, para que los datos parezcan reales
         self.unicorn_types = [
-            'arcoiris', 'brillante', 'dorado', 'plateado', 'cristal',
-            'fuego', 'hielo', 'tormenta', 'bosque', 'celestial'
+            'rainbow', 'sparkle', 'golden', 'silver', 'crystal',
+            'fire', 'ice', 'storm', 'forest', 'celestial'
         ]
 
         # Nombres de clientes, para que los datos parezcan reales
         self.customer_names = [
-            'Sofia', 'Mateo', 'Valentina', 'Benjamin',
-            'Camila', 'Joaquin', 'Martina', 'Thiago',
-            'Lucia', 'Santiago', 'Emilia', 'Franco'
-        ]
-
-        # Puntos de retiro
-        self.locations = [
-            'Bosques de Palermo', 'Parque Centenario',
-            'Parque Tres de Febrero', 'Parque Sarmiento'
+            'Alice', 'Bob', 'Carol', 'David',
+            'Emma', 'Frank', 'Grace', 'Henry',
+            'Ivy', 'Jack', 'Kate', 'Leo'
         ]
 
     def generate_realistic_request(self):
@@ -63,10 +55,10 @@ class ContinuousLoadGenerator:
             'unicorn_type': random.choice(self.unicorn_types),
             'customer_name': random.choice(self.customer_names),
             'rental_duration': random.randint(1, 8),  # horas
-            'location': random.choice(self.locations),
-            'data': f'Pedido de alquiler a las {datetime.now().isoformat()}'
+            'location': random.choice(['Central Park', 'Golden Gate Park', 'Hyde Park', 'Millennium Park']),
+            'data': f'Rental request at {datetime.now().isoformat()}'
         }
-        # En modo baseline mantenemos los payloads mínimos para no activar
+        # En modo baseline, mantener los payloads mínimos para no activar
         # los caminos de escritura por lote que provocan throttling
         if self.baseline:
             payload['rental_duration'] = 1
@@ -95,7 +87,7 @@ class ContinuousLoadGenerator:
             if response.status_code == 200:
                 self.stats['successful_requests'] += 1
                 if random.random() < 0.1:  # Loguea el 10% de los pedidos exitosos
-                    print(f"✓ {request_id}: OK ({duration:.2f}s)")
+                    print(f"✓ {request_id}: Success ({duration:.2f}s)")
             else:
                 self.stats['failed_requests'] += 1
                 print(f"✗ {request_id}: Error {response.status_code} ({duration:.2f}s)")
@@ -103,12 +95,12 @@ class ContinuousLoadGenerator:
         except requests.exceptions.Timeout:
             self.stats['timeout_requests'] += 1
             self.stats['total_requests'] += 1
-            print(f"⏰ {request_id}: Timeout (más de 30s)")
+            print(f"⏰ {request_id}: Timeout (30s+)")
         except Exception as e:
             self.stats['failed_requests'] += 1
             self.stats['total_requests'] += 1
             if random.random() < 0.2:  # Loguea el 20% de las excepciones
-                print(f"✗ {request_id}: Excepción - {str(e)}")
+                print(f"✗ {request_id}: Exception - {str(e)}")
 
     def traffic_pattern(self):
         """Genera patrones de tráfico realistas a lo largo del día"""
@@ -118,15 +110,15 @@ class ContinuousLoadGenerator:
 
         current_hour = datetime.now().hour
 
-        # Patrón de horario laboral (más tráfico entre 9 y 18)
+        # Patrón de horario laboral (más tráfico de 9 a 18)
         if 9 <= current_hour <= 18:
             base_multiplier = 2.0
-        elif 19 <= current_hour <= 22:  # Pico de la tarde/noche
+        elif 19 <= current_hour <= 22:  # Pico de la tarde
             base_multiplier = 1.5
-        else:  # Noche y madrugada
+        else:  # Noche/madrugada
             base_multiplier = 0.5
 
-        # Algo de azar para que los picos se sientan reales
+        # Algo de azar para picos realistas
         spike_chance = random.random()
         if spike_chance < 0.05:  # 5% de probabilidad de pico de tráfico
             multiplier = base_multiplier * random.uniform(3, 5)
@@ -184,9 +176,9 @@ class ContinuousLoadGenerator:
 
     def start(self):
         """Arranca el generador de carga continua"""
-        mode = "BASELINE (constante, solo tráfico sano)" if self.baseline else "NORMAL (patrones realistas con picos)"
+        mode = "BASELINE (constante, solo tráfico exitoso)" if self.baseline else "NORMAL (patrones realistas con picos)"
         print(f"🎯 Arrancando el generador de carga continua")
-        print(f"🔗 URL de la API: {self.api_url}")
+        print(f"🔗 API URL: {self.api_url}")
         print(f"📈 RPS de base: {self.base_rps}")
         print(f"🔧 Modo: {mode}")
         print(f"👥 Workers máximos: {self.max_workers}")
@@ -242,12 +234,12 @@ def main():
     parser.add_argument('--rps', type=float, default=5.0, help='Pedidos por segundo de base (por defecto: 5)')
     parser.add_argument('--workers', type=int, default=10, help='Cantidad máxima de workers concurrentes (por defecto: 10)')
     parser.add_argument('--duration', type=int, help='Correr durante la cantidad de minutos indicada (por defecto: indefinidamente)')
-    parser.add_argument('--baseline', action='store_true', help='Modo baseline: ritmo constante, sin picos — genera tráfico sano y limpio')
+    parser.add_argument('--baseline', action='store_true', help='Modo baseline: ritmo constante, sin picos — genera tráfico exitoso y limpio')
 
     args = parser.parse_args()
 
     if not args.api_url:
-        parser.error('--api-url es obligatorio (o definí la variable API_URL / desplegá con deploy.sh primero)')
+        parser.error('--api-url es obligatorio (o definí la variable de entorno API_URL / desplegá con deploy.sh primero)')
 
     # Configura el manejador de señales para un apagado ordenado
     signal.signal(signal.SIGINT, signal_handler)

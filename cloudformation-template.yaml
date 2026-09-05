@@ -15,30 +15,11 @@ Parameters:
     Default: ''
     NoEcho: true
     Description: 'Clave secreta HMAC del webhook de DevOps Agent (dejar vacío para omitir la integración por webhook)'
-  TelegramBotToken:
-    Type: String
-    Default: ''
-    NoEcho: true
-    Description: 'Token del bot de Telegram que da @BotFather (dejar vacío para omitir las notificaciones a Telegram)'
-  TelegramChatId:
-    Type: String
-    Default: ''
-    Description: 'Chat ID de Telegram donde publicar (dejar vacío para omitir las notificaciones a Telegram)'
 
 Conditions:
   HasWebhookConfig: !And
     - !Not [!Equals [!Ref DevOpsAgentWebhookUrl, '']]
     - !Not [!Equals [!Ref DevOpsAgentWebhookSecret, '']]
-
-  HasTelegramConfig: !And
-    - !Not [!Equals [!Ref TelegramBotToken, '']]
-    - !Not [!Equals [!Ref TelegramChatId, '']]
-
-  # El pipeline SNS -> Lambda se crea si hay al menos un destino configurado.
-  # Asi se puede usar solo Telegram, solo el webhook, o los dos a la vez.
-  HasAnyNotificationTarget: !Or
-    - !Condition HasWebhookConfig
-    - !Condition HasTelegramConfig
 
 Resources:
   # Tabla de DynamoDB
@@ -306,7 +287,7 @@ Resources:
       Threshold: 3
       ComparisonOperator: GreaterThanThreshold
       AlarmActions: !If
-        - HasAnyNotificationTarget
+        - HasWebhookConfig
         - - !Ref AlarmNotificationTopic
         - !Ref 'AWS::NoValue'
       Dimensions:
@@ -337,7 +318,7 @@ Resources:
       Threshold: 10000  # 10 segundos
       ComparisonOperator: GreaterThanThreshold
       AlarmActions: !If
-        - HasAnyNotificationTarget
+        - HasWebhookConfig
         - - !Ref AlarmNotificationTopic
         - !Ref 'AWS::NoValue'
       Dimensions:
@@ -368,7 +349,7 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       AlarmActions: !If
-        - HasAnyNotificationTarget
+        - HasWebhookConfig
         - - !Ref AlarmNotificationTopic
         - !Ref 'AWS::NoValue'
       Dimensions:
@@ -386,10 +367,10 @@ Resources:
         - Key: auto-stop
           Value: 'no'
 
-  # Tópico SNS del pipeline Alarma de CloudWatch → (Webhook de DevOps Agent | Telegram)
+  # Tópico SNS del pipeline Alarma de CloudWatch → Webhook de DevOps Agent
   AlarmNotificationTopic:
     Type: AWS::SNS::Topic
-    Condition: HasAnyNotificationTarget
+    Condition: HasWebhookConfig
     Properties:
       TopicName: !Sub '${Environment}-unicorn-rentals-alarm-notifications'
       Tags:
@@ -404,10 +385,10 @@ Resources:
         - Key: auto-stop
           Value: 'no'
 
-  # Rol del Lambda reenviador de notificaciones
+  # Rol del Lambda reenviador del webhook
   WebhookForwarderRole:
     Type: AWS::IAM::Role
-    Condition: HasAnyNotificationTarget
+    Condition: HasWebhookConfig
     Properties:
       RoleName: !Sub '${Environment}-webhook-forwarder-role'
       AssumeRolePolicyDocument:
@@ -431,11 +412,10 @@ Resources:
         - Key: auto-stop
           Value: 'no'
 
-  # Lambda que reparte las alarmas a los destinos configurados:
-  # el webhook de DevOps Agent (que arranca la investigacion) y/o Telegram.
+  # Lambda que reenvía las alarmas al webhook de DevOps Agent
   WebhookForwarderFunction:
     Type: AWS::Lambda::Function
-    Condition: HasAnyNotificationTarget
+    Condition: HasWebhookConfig
     Properties:
       FunctionName: !Sub '${Environment}-devops-agent-webhook-forwarder'
       Runtime: python3.13
@@ -447,140 +427,19 @@ Resources:
         Variables:
           WEBHOOK_URL: !Ref DevOpsAgentWebhookUrl
           WEBHOOK_SECRET: !Ref DevOpsAgentWebhookSecret
-          TELEGRAM_BOT_TOKEN: !Ref TelegramBotToken
-          TELEGRAM_CHAT_ID: !Ref TelegramChatId
-          ENVIRONMENT: !Ref Environment
       Code:
         ZipFile: |
-          # Reparte cada alarma de CloudWatch a los destinos que esten configurados:
-          #   - Webhook de DevOps Agent -> arranca la investigacion (los hallazgos van a Slack)
-          #   - Bot de Telegram         -> aviso del incidente en el celular
-          # Cada destino se maneja por separado: si uno falla, el otro igual se envia.
-          #
-          # Los textos de Telegram usan escapes \uXXXX para las tildes. Este bloque va
-          # embebido en el template (ZipFile) y se mantiene en ASCII a proposito, pero
-          # el mensaje tiene que renderizar bien en pantalla durante la charla.
-          import html
           import json
           import os
           import hashlib
           import hmac
           import base64
-          from datetime import datetime, timezone
+          from datetime import datetime
           from urllib import request, error
 
-          TELEGRAM_API = 'https://api.telegram.org/bot{token}/sendMessage'
-
-
-          def _post(url, body, headers, timeout=10):
-              req = request.Request(url, data=body, headers=headers, method='POST')
-              with request.urlopen(req, timeout=timeout) as resp:
-                  return resp.status
-
-
-          def notify_devops_agent(url, secret, info):
-              """Dispara una investigacion via webhook firmado con HMAC."""
-              payload = json.dumps({
-                  "eventType": "incident",
-                  "incidentId": info['incident_id'],
-                  "action": "created",
-                  "priority": "HIGH",
-                  "title": f"Alarma de CloudWatch: {info['alarm_name']}",
-                  "description": (
-                      f"{info['alarm_desc']}. {info['reason']}. "
-                      f"Metric: {info['namespace']}/{info['metric']} "
-                      f"in {info['region']} (Account: {info['account']})"
-                  ),
-                  "service": "unicorn_rentals",
-                  "timestamp": info['timestamp'],
-                  "data": {
-                      "metadata": {
-                          "region": info['region'],
-                          "environment": os.environ.get('ENVIRONMENT', 'prod'),
-                          "source": "cloudwatch-alarm",
-                          "alarm_name": info['alarm_name']
-                      }
-                  }
-              })
-
-              sig_input = f"{info['timestamp']}:{payload}"
-              signature = base64.b64encode(
-                  hmac.new(
-                      secret.encode('utf-8'),
-                      sig_input.encode('utf-8'),
-                      hashlib.sha256
-                  ).digest()
-              ).decode('utf-8')
-
-              return _post(
-                  url,
-                  payload.encode('utf-8'),
-                  {
-                      'Content-Type': 'application/json',
-                      'x-amzn-event-timestamp': info['timestamp'],
-                      'x-amzn-event-signature': signature
-                  }
-              )
-
-
-          def notify_telegram(token, chat_id, info):
-              """Publica el aviso del incidente en el chat de Telegram."""
-              # parse_mode=HTML: solo hay que escapar & < > en los valores dinamicos,
-              # a diferencia de MarkdownV2 que exige escapar muchisimos caracteres.
-              # Telegram rechaza mensajes de mas de 4096 caracteres, y NewStateReason
-              # puede venir largo. Recortamos los valores dinamicos ANTES de armar el
-              # HTML: si cortaramos el mensaje final podriamos partir una etiqueta al
-              # medio y Telegram responderia 400.
-              def esc(v, limit=600):
-                  v = str(v)
-                  if len(v) > limit:
-                      v = v[:limit] + "\u2026"
-                  return html.escape(v, quote=False)
-
-              lines = [
-                  f"\U0001F6A8 <b>Alarma en {esc(os.environ.get('ENVIRONMENT', 'prod'))}</b>",
-                  f"<code>{esc(info['alarm_name'])}</code>",
-                  "",
-                  esc(info['alarm_desc']) or "\u2014",
-                  "",
-                  f"<b>M\u00e9trica:</b> {esc(info['namespace'])}/{esc(info['metric'])}",
-                  f"<b>Regi\u00f3n:</b> {esc(info['region'])}",
-                  f"<b>Motivo:</b> {esc(info['reason'])}",
-                  "",
-                  "\U0001F916 <i>DevOps Agent arranc\u00f3 la investigaci\u00f3n. "
-                  "Los hallazgos van al canal de Slack.</i>"
-              ]
-
-              body = json.dumps({
-                  'chat_id': chat_id,
-                  'text': "\n".join(lines),
-                  'parse_mode': 'HTML',
-                  'disable_web_page_preview': True
-              })
-
-              return _post(
-                  TELEGRAM_API.format(token=token),
-                  body.encode('utf-8'),
-                  {'Content-Type': 'application/json'}
-              )
-
-
-          def _send(label, alarm_name, fn, *args):
-              """Ejecuta un destino sin dejar que su fallo afecte a los demas."""
-              try:
-                  status = fn(*args)
-                  print(f"{label} enviado para {alarm_name}: {status}")
-              except error.HTTPError as e:
-                  print(f"Fallo {label} para {alarm_name}: {e.code} {e.read().decode()}")
-              except Exception as e:
-                  print(f"Error de {label} para {alarm_name}: {str(e)}")
-
-
           def lambda_handler(event, context):
-              webhook_url = os.environ.get('WEBHOOK_URL', '')
-              webhook_secret = os.environ.get('WEBHOOK_SECRET', '')
-              tg_token = os.environ.get('TELEGRAM_BOT_TOKEN', '')
-              tg_chat_id = os.environ.get('TELEGRAM_CHAT_ID', '')
+              webhook_url = os.environ['WEBHOOK_URL']
+              webhook_secret = os.environ['WEBHOOK_SECRET']
 
               for record in event.get('Records', []):
                   message = record.get('Sns', {}).get('Message', '{}')
@@ -591,33 +450,72 @@ Resources:
                       continue
 
                   alarm_name = alarm.get('AlarmName', 'Alarma desconocida')
+                  alarm_desc = alarm.get('AlarmDescription', '')
                   new_state = alarm.get('NewStateValue', '')
+                  reason = alarm.get('NewStateReason', '')
+                  region = alarm.get('Region', '')
+                  account = alarm.get('AWSAccountId', '')
+                  namespace = alarm.get('Trigger', {}).get('Namespace', '')
+                  metric = alarm.get('Trigger', {}).get('MetricName', '')
 
-                  # Solo notificar en transiciones a ALARM, no en las recuperaciones a OK
+                  # Solo disparar investigaciones cuando el estado es ALARM
                   if new_state != 'ALARM':
                       print(f"Omitiendo {alarm_name}: el estado es {new_state}")
                       continue
 
-                  now = datetime.now(timezone.utc)
-                  info = {
-                      'alarm_name': alarm_name,
-                      'alarm_desc': alarm.get('AlarmDescription', ''),
-                      'reason': alarm.get('NewStateReason', ''),
-                      'region': alarm.get('Region', ''),
-                      'account': alarm.get('AWSAccountId', ''),
-                      'namespace': alarm.get('Trigger', {}).get('Namespace', ''),
-                      'metric': alarm.get('Trigger', {}).get('MetricName', ''),
-                      'timestamp': now.strftime('%Y-%m-%dT%H:%M:%S.000Z'),
-                      'incident_id': f"cw-alarm-{alarm_name}-{int(now.timestamp())}"
-                  }
+                  timestamp = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.000Z')
+                  incident_id = f"cw-alarm-{alarm_name}-{int(datetime.utcnow().timestamp())}"
 
-                  if webhook_url and webhook_secret:
-                      _send('Webhook', alarm_name, notify_devops_agent,
-                            webhook_url, webhook_secret, info)
+                  payload = json.dumps({
+                      "eventType": "incident",
+                      "incidentId": incident_id,
+                      "action": "created",
+                      "priority": "HIGH",
+                      "title": f"Alarma de CloudWatch: {alarm_name}",
+                      "description": (
+                          f"{alarm_desc}. {reason}. "
+                          f"Metric: {namespace}/{metric} in {region} (Account: {account})"
+                      ),
+                      "service": "unicorn_rentals",
+                      "timestamp": timestamp,
+                      "data": {
+                          "metadata": {
+                              "region": region,
+                              "environment": os.environ.get('ENVIRONMENT', 'prod'),
+                              "source": "cloudwatch-alarm",
+                              "alarm_name": alarm_name
+                          }
+                      }
+                  })
 
-                  if tg_token and tg_chat_id:
-                      _send('Telegram', alarm_name, notify_telegram,
-                            tg_token, tg_chat_id, info)
+                  # Firma HMAC
+                  sig_input = f"{timestamp}:{payload}"
+                  signature = base64.b64encode(
+                      hmac.new(
+                          webhook_secret.encode('utf-8'),
+                          sig_input.encode('utf-8'),
+                          hashlib.sha256
+                      ).digest()
+                  ).decode('utf-8')
+
+                  req = request.Request(
+                      webhook_url,
+                      data=payload.encode('utf-8'),
+                      headers={
+                          'Content-Type': 'application/json',
+                          'x-amzn-event-timestamp': timestamp,
+                          'x-amzn-event-signature': signature
+                      },
+                      method='POST'
+                  )
+
+                  try:
+                      with request.urlopen(req) as resp:
+                          print(f"Webhook enviado para {alarm_name}: {resp.status}")
+                  except error.HTTPError as e:
+                      print(f"Fallo el webhook para {alarm_name}: {e.code} {e.read().decode()}")
+                  except Exception as e:
+                      print(f"Error de webhook para {alarm_name}: {str(e)}")
 
               return {'statusCode': 200}
       Tags:
@@ -635,7 +533,7 @@ Resources:
   # Permiso de SNS para invocar el Lambda
   WebhookForwarderSnsPermission:
     Type: AWS::Lambda::Permission
-    Condition: HasAnyNotificationTarget
+    Condition: HasWebhookConfig
     Properties:
       FunctionName: !Ref WebhookForwarderFunction
       Action: lambda:InvokeFunction
@@ -645,7 +543,7 @@ Resources:
   # Suscripción de SNS al Lambda
   WebhookForwarderSubscription:
     Type: AWS::SNS::Subscription
-    Condition: HasAnyNotificationTarget
+    Condition: HasWebhookConfig
     Properties:
       TopicArn: !Ref AlarmNotificationTopic
       Protocol: lambda

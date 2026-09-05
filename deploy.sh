@@ -1,15 +1,12 @@
 #!/bin/bash
 
 # Demo de AWS DevOps Agent - Script de despliegue
-# Charla: "La última guardia manual" por Roxs
 set -e
 
 STACK_NAME="unicorn-rentals"
 ENVIRONMENT="prod"
 WEBHOOK_URL="${DEVOPS_AGENT_WEBHOOK_URL:-}"
 WEBHOOK_SECRET="${DEVOPS_AGENT_WEBHOOK_SECRET:-}"
-TELEGRAM_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
-TELEGRAM_CHAT="${TELEGRAM_CHAT_ID:-}"
 
 echo "🚀 Desplegando el entorno Unicorn Rentals"
 echo "================================================"
@@ -24,19 +21,11 @@ echo "✅ AWS CLI configurado"
 
 # Armar la lista de parámetros
 PARAMS="ParameterKey=Environment,ParameterValue=$ENVIRONMENT"
-
 if [ -n "$WEBHOOK_URL" ] && [ -n "$WEBHOOK_SECRET" ]; then
     PARAMS="$PARAMS ParameterKey=DevOpsAgentWebhookUrl,ParameterValue=$WEBHOOK_URL ParameterKey=DevOpsAgentWebhookSecret,ParameterValue=$WEBHOOK_SECRET"
-    echo "🔗 Webhook de DevOps Agent habilitado (arranca la investigación, hallazgos a Slack)"
+    echo "🔗 Integración por webhook habilitada"
 else
     echo "ℹ️  Sin webhook configurado (definí DEVOPS_AGENT_WEBHOOK_URL y DEVOPS_AGENT_WEBHOOK_SECRET para habilitarlo)"
-fi
-
-if [ -n "$TELEGRAM_TOKEN" ] && [ -n "$TELEGRAM_CHAT" ]; then
-    PARAMS="$PARAMS ParameterKey=TelegramBotToken,ParameterValue=$TELEGRAM_TOKEN ParameterKey=TelegramChatId,ParameterValue=$TELEGRAM_CHAT"
-    echo "📲 Notificaciones a Telegram habilitadas (chat $TELEGRAM_CHAT)"
-else
-    echo "ℹ️  Sin Telegram configurado (definí TELEGRAM_BOT_TOKEN y TELEGRAM_CHAT_ID para habilitarlo)"
 fi
 
 # Verificar si el stack existe y en qué estado está
@@ -46,14 +35,14 @@ if aws cloudformation describe-stacks --stack-name $STACK_NAME > /dev/null 2>&1;
         --stack-name $STACK_NAME \
         --query 'Stacks[0].StackStatus' \
         --output text)
-    echo "📋 El stack ya existe, con estado: $STACK_STATUS"
+    echo "📋 El stack existe con estado: $STACK_STATUS"
 fi
 
-# Manejar los distintos estados posibles del stack
+# Manejar los distintos estados del stack
 if [ "$STACK_STATUS" = "CREATE_FAILED" ] || [ "$STACK_STATUS" = "ROLLBACK_COMPLETE" ]; then
-    echo "🗑️  Borrando el stack que quedó fallado..."
+    echo "🗑️  Borrando el stack fallado..."
     aws cloudformation delete-stack --stack-name $STACK_NAME
-    echo "⏳ Esperando que termine el borrado del stack..."
+    echo "⏳ Esperando el borrado del stack..."
     aws cloudformation wait stack-delete-complete --stack-name $STACK_NAME
     STACK_STATUS=""
 fi
@@ -111,7 +100,7 @@ TABLE_NAME=$(aws cloudformation describe-stacks \
 
 # Crear el archivo de entorno
 cat > demo-environment.env << EOF
-# Variables de entorno del entorno Unicorn Rentals
+# Variables de entorno de Unicorn Rentals
 export API_URL="$API_URL"
 export LAMBDA_NAME="$LAMBDA_NAME"
 export TABLE_NAME="$TABLE_NAME"
@@ -122,7 +111,7 @@ echo "✅ ¡Despliegue completo!"
 echo ""
 echo "📊 Detalles del entorno de demo:"
 echo "   Nombre del stack: $STACK_NAME"
-echo "   URL de la API: $API_URL"
+echo "   API URL: $API_URL"
 echo "   Función Lambda: $LAMBDA_NAME"
 echo "   Tabla DynamoDB: $TABLE_NAME"
 echo ""
@@ -130,6 +119,6 @@ echo "🎯 Próximos pasos:"
 echo "   1. Cargar el entorno: source demo-environment.env"
 echo "   2. Instalar dependencias de Python: pip install requests"
 echo "   3. Correr el generador de carga: python continuous-load-generator.py --api-url \$API_URL --rps 15 --duration 10"
-echo "   4. Mirar las alarmas y las investigaciones de DevOps Agent"
+echo "   4. Monitorear las alarmas y las investigaciones de DevOps Agent"
 echo ""
-echo "🧹 Para limpiar todo: aws cloudformation delete-stack --stack-name $STACK_NAME"
+echo "🧹 Para limpiar: ./cleanup.sh"
