@@ -116,12 +116,7 @@ Resources:
           dynamodb = boto3.resource('dynamodb')
           table = dynamodb.Table(os.environ['TABLE_NAME'])
           error_rate = float(os.environ.get('ERROR_RATE', '0.1'))
-          
-          # OJO: los mensajes de log de esta funcion van a proposito en INGLES.
-          # Son la senal de diagnostico que DevOps Agent lee para el analisis de
-          # causa raiz, y los errores que genera AWS (Runtime.OutOfMemory,
-          # ProvisionedThroughputExceeded, Task timed out) tambien vienen en ingles.
-          # Los comentarios estan en espanol; los strings de runtime, no.
+
           def lambda_handler(event, context):
               print(f"Processing rental request at {datetime.now()}")
 
