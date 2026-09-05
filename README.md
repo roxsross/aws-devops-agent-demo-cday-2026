@@ -93,6 +93,7 @@ El guion técnico del día. Cada paso tiene el detalle más abajo; esto es la se
 - [ ] Conectar el canal de Slack al Agent Space
 - [ ] Generar el webhook en el Space y redesplegar con `DEVOPS_AGENT_WEBHOOK_URL` y `DEVOPS_AGENT_WEBHOOK_SECRET`
 - [ ] (Opcional) Configurar Telegram: `./telegram-check.sh` y redesplegar con `TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID`
+- [ ] (Opcional, recortable) Servidor MCP de billing + subir la skill → ver "Servidor MCP"
 
 ### B. Ensayo (lo más importante y lo que todavía falta)
 
@@ -113,6 +114,7 @@ El guion técnico del día. Cada paso tiene el detalle más abajo; esto es la se
    `python continuous-load-generator.py --api-url $API_URL --rps 15 --duration 10`
 4. **La alarma se dispara** → el celular vibra (Telegram = el pager de la vieja guardia)
 5. **Acto 2 — el turno de noche**: el agente arranca solo y el razonamiento aparece en Slack (causa raíz, plan de mitigación)
+6. **(Opcional)** cerrar con el impacto de costos si está la skill de billing
 
 ### Tiempos de referencia (completar en el ensayo)
 
@@ -125,8 +127,9 @@ El guion técnico del día. Cada paso tiene el detalle más abajo; esto es la se
 
 ### Si falta tiempo, recortar en este orden
 
-1. Telegram — es un lindo detalle, pero Slack es lo que muestra el valor real
-2. El núcleo que **no** se toca: carga → alarma → el agente investiga → Slack
+1. La skill de billing y el servidor MCP (conciencia de costos) — es lo más lejano al camino crítico
+2. Telegram — es un lindo detalle, pero Slack es lo que muestra el valor real
+3. El núcleo que **no** se toca: carga → alarma → el agente investiga → Slack
 
 ### EventBridge: mencionarlo, no construirlo
 
@@ -332,6 +335,48 @@ El reenviador solo dispara investigaciones en transiciones al estado ALARM (no e
 
 > **Este es el momento fuerte de la charla**: nadie tocó nada. La alarma se disparó, el agente arrancó la investigación y los hallazgos aparecieron en Slack. Ahí es donde termina la última guardia manual.
 
+### Servidor MCP de Billing & Cost Management (opcional)
+
+Conectar servidores MCP a DevOps Agent le da contexto y herramientas más allá de las integraciones nativas de AWS. En este caso, el servidor MCP de Billing & Cost Management da acceso a datos de precios, detección de anomalías de costo y recomendaciones de optimización. Con eso el agente puede recomendar teniendo en cuenta el costo durante una investigación (por ejemplo, estimar el impacto económico de subir la memoria del Lambda o pasar DynamoDB a modo on-demand).
+
+#### Desplegar el servidor MCP
+
+El servidor MCP corre como una función Lambda detrás de API Gateway, envolviendo el paquete [awslabs.billing-cost-management-mcp-server](https://awslabs.github.io/mcp/servers/billing-cost-management-mcp-server) con el transporte MCP Streamable HTTP.
+
+```bash
+cd mcp-server-hosting
+bash deploy.sh
+```
+
+El script imprime la URL del endpoint y la API key. No hace falta CDK ni Docker: alcanza con AWS CLI, Python 3.10 o superior y pip.
+
+#### Conectar el MCP a DevOps Agent
+
+1. En tu Agent Space, ir a **Capabilities** → **MCP Servers** → **Add MCP Server**
+2. Ingresar la URL del endpoint que salió del despliegue (por ejemplo `https://<api-id>.execute-api.us-east-1.amazonaws.com/prod/mcp`)
+3. Seleccionar **API Key** como flujo de autorización
+4. Configurar:
+   - **API Key Name**: `bcm-mcp-key`
+   - **API Key Header**: `x-api-key`
+   - **API Key Value**: la clave que salió del despliegue
+5. Dejar "Dynamic Client Registration" y "Private connection" sin marcar
+6. Elegir **AWS owned key** para el cifrado
+
+#### Subir la skill de billing
+
+La skill le indica al agente cuándo y cómo usar las herramientas MCP de billing durante una investigación.
+
+1. En tu Agent Space, ir a **Skills** → **Add Skill** → **Upload Skill**
+2. Subir `devops-agent-skill-billing-mcp.zip`
+3. Seleccionar el tipo de agente **Generic** (aplica a todos los tipos de investigación)
+
+Para regenerar el zip después de editar la skill:
+```bash
+cd devops-agent-skill && zip -r ../devops-agent-skill-billing-mcp.zip . -x '.*' && cd ..
+```
+
+Una vez conectado, el agente usa las herramientas de billing automáticamente para buscar anomalías de costo correlacionadas con el incidente, estimar el costo de las mitigaciones propuestas e incluir un resumen de impacto económico en sus hallazgos.
+
 ## Detalle de la arquitectura
 
 **Aplicación**: `unicorn_rentals`
@@ -359,6 +404,7 @@ Si ensayaste la demo y las alarmas quedaron en ALARM, volvelas a OK para que pue
 Borrar todos los recursos cuando termines:
 ```bash
 aws cloudformation delete-stack --stack-name unicorn-rentals
+aws cloudformation delete-stack --stack-name bcm-mcp-server
 ```
 
 ## Recursos adicionales
@@ -376,6 +422,9 @@ aws cloudformation delete-stack --stack-name unicorn-rentals
 - `continuous-load-generator.py` — simulación de tráfico realista
 - `reset-alarms.sh` — vuelve las alarmas de CloudWatch al estado OK
 - `telegram-check.sh` — valida el bot de Telegram y ayuda a encontrar el chat ID
+- `mcp-server-hosting/` — servidor MCP de Billing & Cost Management (Lambda + API Gateway)
+- `devops-agent-skill/` — skill de DevOps Agent para investigaciones con conciencia de costo
+- `devops-agent-skill-billing-mcp.zip` — paquete de la skill listo para subir
 
 ## Qué quedó en inglés, y por qué
 
