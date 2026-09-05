@@ -81,6 +81,60 @@ La arquitectura tiene puntos de falla intencionales que sirven para mostrar la c
 - **Impacto**: caída total del sistema, todos los clientes afectados
 - **Síntomas**: fallas de dependencias a lo largo de todo el stack
 
+## Runbook de la charla
+
+El guion técnico del día. Cada paso tiene el detalle más abajo; esto es la secuencia y el orden. El entorno se despliega en la cuenta `459137896070`, región **us-east-1**, y los recursos quedan con prefijo **`prod-`**.
+
+### A. Preparación (una sola vez, con tiempo antes de la charla)
+
+- [ ] Desplegar el stack: `./deploy.sh` → ver "Puesta en marcha"
+- [ ] Crear el Agent Space con filtro por tag `Application = unicorn_rentals` → ver "El agente toma el turno"
+- [ ] Crear un workspace de Slack gratuito, un canal para la demo, e invitarlo al bot de DevOps Agent → ver "Integración con Slack"
+- [ ] Conectar el canal de Slack al Agent Space
+- [ ] Generar el webhook en el Space y redesplegar con `DEVOPS_AGENT_WEBHOOK_URL` y `DEVOPS_AGENT_WEBHOOK_SECRET`
+- [ ] (Opcional) Configurar Telegram: `./telegram-check.sh` y redesplegar con `TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID`
+- [ ] (Opcional, recortable) Servidor MCP de billing + subir la skill → ver "Servidor MCP"
+
+### B. Ensayo (lo más importante y lo que todavía falta)
+
+- [ ] Correr el ciclo completo de punta a punta al menos una vez: carga → alarma → investigación → Slack
+- [ ] **Cronometrar** cuánto tarda el agente desde que se dispara la alarma hasta que aparece la causa raíz en Slack. Ese número define el guion: si tarda varios minutos, hay que saber qué se cuenta mientras tanto
+- [ ] Confirmar que el mensaje de Telegram se ve bien proyectado (no solo en el celular)
+- [ ] Grabar un **plan B**: video o capturas del ciclo funcionando, por si el wifi del venue falla
+- [ ] Practicar `./reset-alarms.sh` entre corridas para poder repetir
+
+> ⚠️ **Estado actual: nada de esto se desplegó ni se probó en vivo todavía.** La validación hecha es de sintaxis, estructura y lógica con mocks. Los tiempos de abajo están sin medir a propósito: se completan en el ensayo.
+
+### C. En vivo (la secuencia sobre el escenario)
+
+1. **Antes de subir**: dejar corriendo carga de fondo sana
+   `python continuous-load-generator.py --api-url $API_URL --rps 5 --baseline`
+2. **Acto 1 — la guardia manual**: mostrar dashboards y logs a mano, plantear la hipótesis "a la vieja usanza"
+3. **Detonar**: subir la carga para forzar errores
+   `python continuous-load-generator.py --api-url $API_URL --rps 15 --duration 10`
+4. **La alarma se dispara** → el celular vibra (Telegram = el pager de la vieja guardia)
+5. **Acto 2 — el turno de noche**: el agente arranca solo y el razonamiento aparece en Slack (causa raíz, plan de mitigación)
+6. **(Opcional)** cerrar con el impacto de costos si está la skill de billing
+
+### Tiempos de referencia (completar en el ensayo)
+
+| Tramo | Tiempo medido |
+|---|---|
+| Carga alta → alarma en ALARM | _por medir_ |
+| Alarma → investigación arranca | _por medir_ |
+| Investigación → causa raíz en Slack | _por medir_ |
+| Ciclo completo | _por medir_ |
+
+### Si falta tiempo, recortar en este orden
+
+1. La skill de billing y el servidor MCP (conciencia de costos) — es lo más lejano al camino crítico
+2. Telegram — es un lindo detalle, pero Slack es lo que muestra el valor real
+3. El núcleo que **no** se toca: carga → alarma → el agente investiga → Slack
+
+### EventBridge: mencionarlo, no construirlo
+
+DevOps Agent emite eventos del ciclo de vida (`Investigation Created`, `Completed`, etc.) a EventBridge. Es una gran frase para la charla ("de acá los hallazgos van a donde quieras") sin el riesgo de construir un relay que nunca se probó en vivo.
+
 ## Puesta en marcha
 
 ### Requisitos previos
