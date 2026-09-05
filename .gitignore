@@ -29,3 +29,5 @@ mcp-server-hosting/cdk.out/
 
 .terraform/
 .terraform.*
+
+guia/
