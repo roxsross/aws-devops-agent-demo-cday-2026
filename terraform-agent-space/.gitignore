@@ -1,0 +1,12 @@
+# Artefactos de Terraform (no se versionan)
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+
+# Variables locales (pueden contener valores sensibles)
+*.tfvars
+*.tfvars.json
+
+# El lock file .terraform.lock.hcl SÍ se versiona (fija versiones de providers)
