@@ -43,13 +43,17 @@ graph TB
         Agent -->|"Publica novedades"| Slack
     end
 
+    Telegram["📲 Telegram<br/><i>Aviso del incidente</i>"]
+
     Lambda -.->|"Métricas y logs"| A1 & A2
     DDB -.->|"Eventos de throttling"| A3
     Forwarder -->|"Webhook con HMAC"| Agent
+    Forwarder -->|"Bot API"| Telegram
 
     style app fill:#1a1a2e,stroke:#e94560,color:#fff
     style monitoring fill:#1a1a2e,stroke:#f5a623,color:#fff
     style devops fill:#1a1a2e,stroke:#00d2ff,color:#fff
+    style Telegram fill:#1a1a2e,stroke:#2aabee,color:#fff
 ```
 
 La arquitectura tiene puntos de falla intencionales que sirven para mostrar la capacidad de diagnóstico del agente a través de varios servicios de AWS.
@@ -200,12 +204,57 @@ Una vez que agregaste tu Workspace de Slack como proveedor de capacidades, segu�
 
 > **Nota**: Slack funciona como canal de notificación y colaboración. La investigación en sí se maneja desde la WebApp, las integraciones de ticketing o los webhooks. Evitá desinstalar la app de Slack durante el public preview, porque reinstalarla puede no funcionar.
 
+### Notificaciones a Telegram (opcional)
+
+Telegram funciona **en paralelo** con Slack, y es importante tener clara la diferencia:
+
+| Canal | Qué recibe | Cómo |
+|---|---|---|
+| **Slack** | Los hallazgos del agente: causa raíz, análisis, plan de mitigación | Integración nativa de DevOps Agent |
+| **Telegram** | El aviso de que se disparó la alarma y arrancó la investigación | Lambda reenviador → Bot API de Telegram |
+
+DevOps Agent soporta Slack, ServiceNow y PagerDuty como proveedores de comunicación. Telegram no está en esa lista, así que **el agente no puede publicar sus hallazgos ahí de forma nativa**. Lo que sí conseguimos es el aviso del incidente, que para la charla es justo el momento que querés mostrar: el celular vibra, y en Slack empieza a aparecer el razonamiento del agente.
+
+#### 1. Crear el bot
+
+En Telegram, abrí un chat con **@BotFather**, mandá `/newbot` y seguí los pasos. Te va a dar un token con la forma `123456789:ABCdef...`.
+
+#### 2. Conseguir el chat ID y probar
+
+```bash
+export TELEGRAM_BOT_TOKEN="123456789:ABCdef..."
+./telegram-check.sh
+```
+
+El script valida el token, lista los chats que le escribieron al bot y te muestra el ID de cada uno. Telegram solo expone chats con actividad reciente, así que si no aparece nada: mandale un mensaje al bot (chat directo), agregalo al grupo y escribí algo (grupo), o agregalo como administrador y publicá algo (canal).
+
+Con el ID en mano, corré el script otra vez para mandar un mensaje de prueba:
+
+```bash
+export TELEGRAM_CHAT_ID="-1001234567890"
+./telegram-check.sh
+```
+
+#### 3. Desplegar
+
+```bash
+export TELEGRAM_BOT_TOKEN="123456789:ABCdef..."
+export TELEGRAM_CHAT_ID="-1001234567890"
+./deploy.sh
+```
+
+Los dos destinos son independientes. Podés desplegar solo con Telegram, solo con el webhook, o con los dos. El pipeline SNS se crea si hay al menos uno configurado, y si un destino falla el otro se envía igual.
+
+> **Sobre el token**: viaja como parámetro `NoEcho` de CloudFormation, así que no aparece en los eventos ni en la consola, pero queda como variable de entorno del Lambda. Cualquiera con permiso de `lambda:GetFunctionConfiguration` en la cuenta puede leerlo. Para una demo está bien; si esto fuera a producción el token iría en Secrets Manager. Si el token se te filtra, revocalo con `/revoke` en @BotFather.
+
 ### Investigación automática por webhook (opcional)
 
 Podés configurar las alarmas de CloudWatch para que disparen investigaciones de DevOps Agent solas cuando aparecen errores. El stack incluye un pipeline de integración por webhook opcional:
 
 ```
-Alarma de CloudWatch → Tópico SNS → Lambda reenviador → Webhook de DevOps Agent
+                                                    ┌→ Webhook de DevOps Agent → investigación → Slack
+Alarma de CloudWatch → Tópico SNS → Lambda reenviador┤
+                                                    └→ Bot de Telegram → aviso del incidente
 ```
 
 Para habilitarlo:
@@ -318,6 +367,7 @@ aws cloudformation delete-stack --stack-name bcm-mcp-server
 - `deploy.sh` — despliegue automatizado con manejo de errores
 - `continuous-load-generator.py` — simulación de tráfico realista
 - `reset-alarms.sh` — vuelve las alarmas de CloudWatch al estado OK
+- `telegram-check.sh` — valida el bot de Telegram y ayuda a encontrar el chat ID
 - `mcp-server-hosting/` — servidor MCP de Billing & Cost Management (Lambda + API Gateway)
 - `devops-agent-skill/` — skill de DevOps Agent para investigaciones con conciencia de costo
 - `devops-agent-skill-billing-mcp.zip` — paquete de la skill listo para subir

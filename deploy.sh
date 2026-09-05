@@ -8,6 +8,8 @@ STACK_NAME="unicorn-rentals"
 ENVIRONMENT="prod"
 WEBHOOK_URL="${DEVOPS_AGENT_WEBHOOK_URL:-}"
 WEBHOOK_SECRET="${DEVOPS_AGENT_WEBHOOK_SECRET:-}"
+TELEGRAM_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
+TELEGRAM_CHAT="${TELEGRAM_CHAT_ID:-}"
 
 echo "🚀 Desplegando el entorno Unicorn Rentals"
 echo "================================================"
@@ -22,11 +24,19 @@ echo "✅ AWS CLI configurado"
 
 # Armar la lista de parámetros
 PARAMS="ParameterKey=Environment,ParameterValue=$ENVIRONMENT"
+
 if [ -n "$WEBHOOK_URL" ] && [ -n "$WEBHOOK_SECRET" ]; then
     PARAMS="$PARAMS ParameterKey=DevOpsAgentWebhookUrl,ParameterValue=$WEBHOOK_URL ParameterKey=DevOpsAgentWebhookSecret,ParameterValue=$WEBHOOK_SECRET"
-    echo "🔗 Integración por webhook habilitada"
+    echo "🔗 Webhook de DevOps Agent habilitado (arranca la investigación, hallazgos a Slack)"
 else
     echo "ℹ️  Sin webhook configurado (definí DEVOPS_AGENT_WEBHOOK_URL y DEVOPS_AGENT_WEBHOOK_SECRET para habilitarlo)"
+fi
+
+if [ -n "$TELEGRAM_TOKEN" ] && [ -n "$TELEGRAM_CHAT" ]; then
+    PARAMS="$PARAMS ParameterKey=TelegramBotToken,ParameterValue=$TELEGRAM_TOKEN ParameterKey=TelegramChatId,ParameterValue=$TELEGRAM_CHAT"
+    echo "📲 Notificaciones a Telegram habilitadas (chat $TELEGRAM_CHAT)"
+else
+    echo "ℹ️  Sin Telegram configurado (definí TELEGRAM_BOT_TOKEN y TELEGRAM_CHAT_ID para habilitarlo)"
 fi
 
 # Verificar si el stack existe y en qué estado está
