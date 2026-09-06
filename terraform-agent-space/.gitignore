@@ -1,12 +1,8 @@
-# Artefactos de Terraform (no se versionan)
-.terraform/
+# Estado y variables locales de Terraform (pueden contener secretos).
+# Los artefactos .terraform/ y .terraform.* ya se ignoran en el .gitignore raíz.
 *.tfstate
 *.tfstate.*
-crash.log
-crash.*.log
-
-# Variables locales (pueden contener valores sensibles)
 *.tfvars
 *.tfvars.json
-
-# El lock file .terraform.lock.hcl SÍ se versiona (fija versiones de providers)
+crash.log
+crash.*.log
